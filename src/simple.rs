@@ -22,16 +22,6 @@ pub struct FractionalCascade<T> {
     levels: Vec<Vec<Entry<T>>>,
 }
 
-#[derive(Debug)]
-enum CascadedPtr {
-    Zero,
-    Range {
-        left_noninclusive: usize,
-        right_inclusive: usize,
-    },
-    End,
-}
-
 impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
     pub fn new(items: Vec<Vec<T>>) -> Self {
         let mut items_iter = items.into_iter().rev();
@@ -97,78 +87,53 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
         self.levels.iter().map(|l| bisect_left(l, k)).collect()
     }
 
-    fn cascade_ptr(level: &[Entry<T>], ix: usize) -> (usize, CascadedPtr) {
+    fn cascade_ptr(level: &[Entry<T>], ix: usize) -> (usize, Option<usize>) {
         if ix >= level.len() {
-            return (ix, CascadedPtr::End);
+            return (ix, None);
         }
-
         match level[ix].entry_type {
             EntryType::Cascaded { prev_original, next_level } => {
-                let ptr = if next_level == 0 {
-                    CascadedPtr::Zero
-                } else {
-                    CascadedPtr::Range {
-                        left_noninclusive: next_level - 2,
-                        right_inclusive: next_level,
-                    }
-                };
-                (prev_original.unwrap_or(0), ptr)
+                (prev_original.unwrap_or(0), Some(next_level))
             },
             EntryType::Original { next_cascaded: Some(cascaded_ix) } => {
                 let next_level = match level[cascaded_ix].entry_type {
                     EntryType::Cascaded { next_level, .. } => next_level,
                     _ => panic!("Invalid cascaded ptr"),
                 };
-                let ptr = if next_level == 0 {
-                    CascadedPtr::Zero
-                } else {
-                    CascadedPtr::Range {
-                        left_noninclusive: next_level - 2,
-                        right_inclusive: next_level,
-                    }
-                };
-                (ix, ptr)
+                (ix, Some(next_level))
             },
-            EntryType::Original { next_cascaded: None } => (ix, CascadedPtr::End),
+            EntryType::Original { next_cascaded: None } => (ix, None),
         }
     }
 
     pub fn bisect_left(&self, key: T) -> Vec<usize> {
         let mut out = vec![];
-
-        let k = Entry { key, entry_type: EntryType::Original { next_cascaded: None } };
         let mut levels_iter = self.levels.iter();
-
-        let first_level = levels_iter.next().unwrap();
-        let ix = bisect_left(first_level, k);
-        let (result, mut next_ptr) = Self::cascade_ptr(first_level, ix);
+        let first_level = match levels_iter.next() {
+            Some(l) => l,
+            None => return out,
+        };
+        let k = Entry { key, entry_type: EntryType::Original { next_cascaded: None } };
+        let cur_ptr = bisect_left(first_level, k);
+        let (result, mut next_ptr) = Self::cascade_ptr(first_level, cur_ptr);
         out.push(result);
 
         for level in levels_iter {
-            let ix = match next_ptr {
-                CascadedPtr::Zero => 0,
-                CascadedPtr::Range { left_noninclusive, right_inclusive } => {
-                    assert_eq!(left_noninclusive + 2, right_inclusive);
-                    if key <= level[left_noninclusive + 1].key {
-                        left_noninclusive + 1
-                    } else {
-                        assert!(key <= level[right_inclusive].key);
-                        right_inclusive
-                    }
-                },
-                CascadedPtr::End => {
-                    if level.len() % 2 == 0 {
-                        if key <= level[level.len() - 1].key {
-                            level.len() - 1
-                        } else {
-                            level.len()
-                        }
-                    } else {
-                        level.len()
-                    }
-                },
-            };
-            let (result, ptr) = Self::cascade_ptr(level, ix);
+            let mut cur_ptr = next_ptr.unwrap_or(level.len());
+
+            // We know that the cascaded pointer has a value >= key in the previous level. We also
+            // know that any previous element in the current array that was cascaded into the
+            // previous level have a value < key. So, under which conditions do we need to move our
+            // pointer back one position to get the correct result for `bisect_left`?
+            // 1) The current pointer must not be zero.
+            // 2) If the pointer is past the array, the array must have even length. If the array
+            //    has odd length, the last element was cascaded, and we know it must be strictly
+            //    less than `key`.
+            // 3) The value at the `cur_ptr - 1` is greater than or equal to `key`.
+            if cur_ptr != 0 && (cur_ptr != level.len() || level.len() % 2 == 0) && key <= level[cur_ptr - 1].key {
+                cur_ptr -= 1;
+            }
+            let (result, ptr) = Self::cascade_ptr(level, cur_ptr);
             next_ptr = ptr;
             out.push(result);
         }
