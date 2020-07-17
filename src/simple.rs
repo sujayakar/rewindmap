@@ -97,56 +97,55 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
         self.levels.iter().map(|l| bisect_left(l, k)).collect()
     }
 
+    fn cascade_ptr(level: &[Entry<T>], ix: usize) -> (usize, CascadedPtr) {
+        if ix >= level.len() {
+            return (ix, CascadedPtr::End);
+        }
+
+        match level[ix].entry_type {
+            EntryType::Cascaded { prev_original, next_level } => {
+                let ptr = if next_level == 0 {
+                    CascadedPtr::Zero
+                } else {
+                    CascadedPtr::Range {
+                        left_noninclusive: next_level - 2,
+                        right_inclusive: next_level,
+                    }
+                };
+                (prev_original.unwrap_or(0), ptr)
+            },
+            EntryType::Original { next_cascaded: Some(cascaded_ix) } => {
+                let next_level = match level[cascaded_ix].entry_type {
+                    EntryType::Cascaded { next_level, .. } => next_level,
+                    _ => panic!("Invalid cascaded ptr"),
+                };
+                let ptr = if next_level == 0 {
+                    CascadedPtr::Zero
+                } else {
+                    CascadedPtr::Range {
+                        left_noninclusive: next_level - 2,
+                        right_inclusive: next_level,
+                    }
+                };
+                (ix, ptr)
+            },
+            EntryType::Original { next_cascaded: None } => (ix, CascadedPtr::End),
+        }
+    }
+
     pub fn bisect_left(&self, key: T) -> Vec<usize> {
         let mut out = vec![];
 
         let k = Entry { key, entry_type: EntryType::Original { next_cascaded: None } };
         let mut levels_iter = self.levels.iter();
-        let first_level = levels_iter.next().unwrap();
-        let start = bisect_left(first_level, k);
 
-        let mut next_ix = if start >= first_level.len() {
-            out.push(start);
-            CascadedPtr::End
-        } else {
-            match first_level[start].entry_type {
-                EntryType::Cascaded { prev_original, next_level } => {
-                    out.push(prev_original.unwrap_or(0));
-                    if next_level == 0 {
-                        CascadedPtr::Zero
-                    } else {
-                        CascadedPtr::Range {
-                            left_noninclusive: next_level - 2,
-                            right_inclusive: next_level,
-                        }
-                    }
-                },
-                EntryType::Original { next_cascaded } => {
-                    out.push(start);
-                    match next_cascaded {
-                        Some(ix) => {
-                            match first_level[ix].entry_type {
-                                EntryType::Cascaded { next_level, .. } => {
-                                    if next_level == 0 {
-                                        CascadedPtr::Zero
-                                    } else {
-                                        CascadedPtr::Range {
-                                            left_noninclusive: next_level - 2,
-                                            right_inclusive: next_level,
-                                        }
-                                    }
-                                },
-                                _ => panic!("Invalid cascaded ptr"),
-                            }
-                        }
-                        None => CascadedPtr::End,
-                    }
-                },
-            }
-        };
+        let first_level = levels_iter.next().unwrap();
+        let ix = bisect_left(first_level, k);
+        let (result, mut next_ptr) = Self::cascade_ptr(first_level, ix);
+        out.push(result);
 
         for level in levels_iter {
-            let ix = match next_ix {
+            let ix = match next_ptr {
                 CascadedPtr::Zero => 0,
                 CascadedPtr::Range { left_noninclusive, right_inclusive } => {
                     assert_eq!(left_noninclusive + 2, right_inclusive);
@@ -169,47 +168,10 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
                     }
                 },
             };
-            next_ix = if ix >= level.len() {
-                out.push(ix);
-                CascadedPtr::End
-            } else {
-                match level[ix].entry_type {
-                    EntryType::Cascaded { prev_original, next_level } => {
-                        out.push(prev_original.unwrap_or(0));
-                        if next_level == 0 {
-                            CascadedPtr::Zero
-                        } else {
-                            CascadedPtr::Range {
-                                left_noninclusive: next_level - 2,
-                                right_inclusive: next_level,
-                            }
-                        }
-                    },
-                    EntryType::Original { next_cascaded } => {
-                        out.push(ix);
-                        match next_cascaded {
-                            Some(ix) => {
-                                match level[ix].entry_type {
-                                    EntryType::Cascaded { next_level, .. } => {
-                                        if next_level == 0 {
-                                            CascadedPtr::Zero
-                                        } else {
-                                            CascadedPtr::Range {
-                                                left_noninclusive: next_level - 2,
-                                                right_inclusive: next_level,
-                                            }
-                                        }
-                                    },
-                                    _ => panic!("Invalid cascaded ptr"),
-                                }
-                            }
-                            None => CascadedPtr::End,
-                        }
-                    }
-                }
-            };
+            let (result, ptr) = Self::cascade_ptr(level, ix);
+            next_ptr = ptr;
+            out.push(result);
         }
-
         out
     }
 }
