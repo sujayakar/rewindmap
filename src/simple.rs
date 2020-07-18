@@ -1,20 +1,14 @@
 use std::fmt::Debug;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-enum EntryType {
-    Original {
-        next_cascaded: Option<usize>,
-    },
-    Cascaded {
-        prev_original: usize,
-        next_level: usize,
-    },
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct Entry<T> {
     key: T,
-    entry_type: EntryType,
+    is_cascaded: bool,
+
+    // Pointer to the preceding original element if cascaded, current index if original.
+    prev_original: usize,
+    // Pointer to next cascaded element's index in next level if original, index itself if cascaded.
+    next_level: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -33,7 +27,8 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
         let last = items_iter.next().expect("No levels");
         let last_level: Vec<_> = last
             .into_iter()
-            .map(|key| Entry { key, entry_type: EntryType::Original { next_cascaded: None } })
+            .enumerate()
+            .map(|(i, key)| Entry { key, is_cascaded: false, prev_original: i, next_level: None })
             .collect();
 
         let mut levels = vec![Level { entries: last_level }];
@@ -41,40 +36,35 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
         for items in items_iter {
             let mut level: Vec<_> = items
                 .into_iter()
-                .map(|key| Entry { key, entry_type: EntryType::Original { next_cascaded: None } }) // fix this up below
+                .enumerate()
+                // Fix up the `next_level` below.
+                .map(|(i, key)| Entry { key, is_cascaded: false, prev_original: i, next_level: None })
                 .collect();
 
-            for (ix, entry) in levels.last().unwrap().entries.iter().enumerate().step_by(2) {
-                let entry_type = EntryType::Cascaded {
-                    prev_original: 0, // fix this up below
-                    next_level: ix,
-                };
-                level.push(Entry { key: entry.key, entry_type });
+            for (i, entry) in levels.last().unwrap().entries.iter().enumerate().step_by(2) {
+                // Fix up `prev_original` below
+                level.push(Entry { key: entry.key, is_cascaded: true, prev_original: std::usize::MAX, next_level: Some(i) });
             }
 
             level.sort();
 
+            // Fix up the `prev_original` field for cascaded entries.
             let mut last_original = 0;
-            for (ix, item) in level.iter_mut().enumerate() {
-                match item.entry_type {
-                    EntryType::Original { .. } => {
-                        last_original = ix;
-                    },
-                    EntryType::Cascaded { ref mut prev_original, .. } => {
-                        *prev_original = last_original;
-                    },
+            for (i, entry) in level.iter_mut().enumerate() {
+                if entry.is_cascaded {
+                    entry.prev_original = last_original;
+                } else {
+                    last_original = i;
                 }
             }
 
-            let mut last_cascaded = None;
-            for (ix, item) in level.iter_mut().enumerate().rev() {
-                match item.entry_type {
-                    EntryType::Original { ref mut next_cascaded } => {
-                        *next_cascaded = last_cascaded;
-                    },
-                    EntryType::Cascaded { .. } => {
-                        last_cascaded = Some(ix);
-                    },
+            // Fix up the `next_level` for original entries.
+            let mut next_level = None;
+            for entry in level.iter_mut().rev() {
+                if entry.is_cascaded {
+                    next_level = entry.next_level;
+                } else {
+                    entry.next_level = next_level;
                 }
             }
 
@@ -88,31 +78,18 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
 
     // For each array, returns ix such that A[i] < key for all i < ix.
     pub fn bisect_left_naive(&self, key: T) -> Vec<usize> {
-        let k = Entry { key, entry_type: EntryType::Original { next_cascaded: None } };
+        let k = Entry { key, is_cascaded: false, prev_original: 0, next_level: None };
         self.levels.iter().map(|l| bisect_left(&l.entries, k)).collect()
     }
 
-    #[inline(never)]
     fn cascade_ptr(level: &[Entry<T>], ix: usize) -> (usize, Option<usize>) {
         if ix >= level.len() {
             return (ix, None);
         }
-        match level[ix].entry_type {
-            EntryType::Cascaded { prev_original, next_level } => {
-                (prev_original, Some(next_level))
-            },
-            EntryType::Original { next_cascaded: Some(cascaded_ix) } => {
-                let next_level = match level[cascaded_ix].entry_type {
-                    EntryType::Cascaded { next_level, .. } => next_level,
-                    _ => panic!("Invalid cascaded ptr"),
-                };
-                (ix, Some(next_level))
-            },
-            EntryType::Original { next_cascaded: None } => (ix, None),
-        }
+        let entry = &level[ix];
+        (entry.prev_original, entry.next_level)
     }
 
-    #[inline(never)]
     pub fn bisect_left(&self, key: T) -> Vec<usize> {
         let mut out = Vec::with_capacity(self.levels.len());
         let mut levels_iter = self.levels.iter();
@@ -120,7 +97,7 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
             Some(l) => l,
             None => return out,
         };
-        let k = Entry { key, entry_type: EntryType::Original { next_cascaded: None } };
+        let k = Entry { key, is_cascaded: false, prev_original: 0, next_level: None };
         let cur_ptr = bisect_left(&first_level.entries, k);
         let (result, mut next_ptr) = Self::cascade_ptr(&first_level.entries, cur_ptr);
         out.push(result);
@@ -150,7 +127,6 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
 }
 
 // Returns ix such that A[i] < key for all i < ix.
-#[inline(never)]
 pub fn bisect_left<T: Ord>(array: &[T], key: T) -> usize {
     let mut lo = 0;
     let mut hi = array.len();
