@@ -1,4 +1,5 @@
 use std::fmt::Debug;
+use std::usize;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct Entry<T> {
@@ -7,13 +8,17 @@ struct Entry<T> {
 
     // Pointer to the preceding original element if cascaded, current index if original.
     prev_original: usize,
+
     // Pointer to next cascaded element's index in next level if original, index itself if cascaded.
-    next_level: Option<usize>,
+    next_level: usize,
+    check_preceding: bool,
 }
 
 #[derive(Debug)]
 struct Level<T> {
     entries: Vec<Entry<T>>,
+    next_len: usize,
+    check_preceding: bool,
 }
 
 #[derive(Debug)]
@@ -28,22 +33,24 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
         let last_level: Vec<_> = last
             .into_iter()
             .enumerate()
-            .map(|(i, key)| Entry { key, is_cascaded: false, prev_original: i, next_level: None })
+            .map(|(i, key)| Entry { key, is_cascaded: false, prev_original: i, next_level: usize::MAX, check_preceding: false })
             .collect();
 
-        let mut levels = vec![Level { entries: last_level }];
+        let mut levels = vec![Level { entries: last_level, next_len: usize::MAX, check_preceding: false }];
 
         for items in items_iter {
             let mut level: Vec<_> = items
                 .into_iter()
                 .enumerate()
-                // Fix up the `next_level` below.
-                .map(|(i, key)| Entry { key, is_cascaded: false, prev_original: i, next_level: None })
+                // Fix up the `next_level` below.None
+                .map(|(i, key)| Entry { key, is_cascaded: false, prev_original: i, next_level: usize::MAX, check_preceding: false })
                 .collect();
 
-            for (i, entry) in levels.last().unwrap().entries.iter().enumerate().step_by(2) {
+            let prev_level = levels.last().unwrap();
+            let prev_len = prev_level.entries.len();
+            for (i, entry) in prev_level.entries.iter().enumerate().step_by(2) {
                 // Fix up `prev_original` below
-                level.push(Entry { key: entry.key, is_cascaded: true, prev_original: std::usize::MAX, next_level: Some(i) });
+                level.push(Entry { key: entry.key, is_cascaded: true, prev_original: usize::MAX, next_level: i, check_preceding: false });
             }
 
             level.sort();
@@ -59,16 +66,18 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
             }
 
             // Fix up the `next_level` for original entries.
-            let mut next_level = None;
+            let mut next_level = prev_len;
             for entry in level.iter_mut().rev() {
                 if entry.is_cascaded {
                     next_level = entry.next_level;
                 } else {
                     entry.next_level = next_level;
                 }
+                entry.check_preceding = entry.next_level != 0
+                    && (entry.next_level != prev_len || prev_len % 2 == 0);
             }
-
-            levels.push(Level { entries: level });
+            let check_preceding = prev_len != 0 && prev_len % 2 == 0;
+            levels.push(Level { entries: level, next_len: prev_len, check_preceding });
         }
 
         levels.reverse();
@@ -78,16 +87,16 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
 
     // For each array, returns ix such that A[i] < key for all i < ix.
     pub fn bisect_left_naive(&self, key: T) -> Vec<usize> {
-        let k = Entry { key, is_cascaded: false, prev_original: 0, next_level: None };
+        let k = Entry { key, is_cascaded: false, prev_original: 0, next_level: 0, check_preceding: false };
         self.levels.iter().map(|l| bisect_left(&l.entries, k)).collect()
     }
 
-    fn cascade_ptr(level: &[Entry<T>], ix: usize) -> (usize, Option<usize>) {
-        if ix >= level.len() {
-            return (ix, None);
+    fn cascade_ptr(level: &Level<T>, ix: usize) -> (usize, usize, bool) {
+        if ix >= level.entries.len() {
+            return (ix, level.next_len, level.check_preceding);
         }
-        let entry = &level[ix];
-        (entry.prev_original, entry.next_level)
+        let entry = &level.entries[ix];
+        (entry.prev_original, entry.next_level, entry.check_preceding)
     }
 
     pub fn bisect_left(&self, key: T) -> Vec<usize> {
@@ -97,13 +106,13 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
             Some(l) => l,
             None => return out,
         };
-        let k = Entry { key, is_cascaded: false, prev_original: 0, next_level: None };
+        let k = Entry { key, is_cascaded: false, prev_original: 0, next_level: 0, check_preceding: false };
         let cur_ptr = bisect_left(&first_level.entries, k);
-        let (result, mut next_ptr) = Self::cascade_ptr(&first_level.entries, cur_ptr);
+        let (result, mut next_ptr, mut check_preceding) = Self::cascade_ptr(&first_level, cur_ptr);
         out.push(result);
 
         for level in levels_iter {
-            let mut cur_ptr = next_ptr.unwrap_or(level.entries.len());
+            let mut cur_ptr = next_ptr;//.unwrap_or(level.entries.len());
             let len = level.entries.len();
 
             // We know that the cascaded pointer has a value >= key in the previous level. We also
@@ -115,11 +124,12 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
             //    has odd length, the last element was cascaded, and we know it must be strictly
             //    less than `key`.
             // 3) The value at the `cur_ptr - 1` is greater than or equal to `key`.
-            if cur_ptr != 0 && (cur_ptr != len || len % 2 == 0) && key <= level.entries[cur_ptr - 1].key {
+            if check_preceding && key <= level.entries[cur_ptr - 1].key {
                 cur_ptr -= 1;
             }
-            let (result, ptr) = Self::cascade_ptr(&level.entries, cur_ptr);
+            let (result, ptr, cp) = Self::cascade_ptr(&level, cur_ptr);
             next_ptr = ptr;
+            check_preceding = cp;
             out.push(result);
         }
         out
