@@ -18,8 +18,13 @@ struct Entry<T> {
 }
 
 #[derive(Debug)]
+struct Level<T> {
+    entries: Vec<Entry<T>>,
+}
+
+#[derive(Debug)]
 pub struct FractionalCascade<T> {
-    levels: Vec<Vec<Entry<T>>>,
+    levels: Vec<Level<T>>,
 }
 
 impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
@@ -31,7 +36,7 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
             .map(|key| Entry { key, entry_type: EntryType::Original { next_cascaded: None } })
             .collect();
 
-        let mut levels = vec![last_level];
+        let mut levels = vec![Level { entries: last_level }];
 
         for items in items_iter {
             let mut level: Vec<_> = items
@@ -39,7 +44,7 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
                 .map(|key| Entry { key, entry_type: EntryType::Original { next_cascaded: None } }) // fix this up below
                 .collect();
 
-            for (ix, entry) in levels.last().unwrap().iter().enumerate().step_by(2) {
+            for (ix, entry) in levels.last().unwrap().entries.iter().enumerate().step_by(2) {
                 let entry_type = EntryType::Cascaded {
                     prev_original: None, // fix this up below
                     next_level: ix,
@@ -73,7 +78,7 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
                 }
             }
 
-            levels.push(level);
+            levels.push(Level { entries: level });
         }
 
         levels.reverse();
@@ -84,7 +89,7 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
     // For each array, returns ix such that A[i] < key for all i < ix.
     pub fn bisect_left_naive(&self, key: T) -> Vec<usize> {
         let k = Entry { key, entry_type: EntryType::Original { next_cascaded: None } };
-        self.levels.iter().map(|l| bisect_left(l, k)).collect()
+        self.levels.iter().map(|l| bisect_left(&l.entries, k)).collect()
     }
 
     fn cascade_ptr(level: &[Entry<T>], ix: usize) -> (usize, Option<usize>) {
@@ -107,19 +112,20 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
     }
 
     pub fn bisect_left(&self, key: T) -> Vec<usize> {
-        let mut out = vec![];
+        let mut out = Vec::with_capacity(self.levels.len());
         let mut levels_iter = self.levels.iter();
         let first_level = match levels_iter.next() {
             Some(l) => l,
             None => return out,
         };
         let k = Entry { key, entry_type: EntryType::Original { next_cascaded: None } };
-        let cur_ptr = bisect_left(first_level, k);
-        let (result, mut next_ptr) = Self::cascade_ptr(first_level, cur_ptr);
+        let cur_ptr = bisect_left(&first_level.entries, k);
+        let (result, mut next_ptr) = Self::cascade_ptr(&first_level.entries, cur_ptr);
         out.push(result);
 
         for level in levels_iter {
-            let mut cur_ptr = next_ptr.unwrap_or(level.len());
+            let mut cur_ptr = next_ptr.unwrap_or(level.entries.len());
+            let len = level.entries.len();
 
             // We know that the cascaded pointer has a value >= key in the previous level. We also
             // know that any previous element in the current array that was cascaded into the
@@ -130,10 +136,10 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
             //    has odd length, the last element was cascaded, and we know it must be strictly
             //    less than `key`.
             // 3) The value at the `cur_ptr - 1` is greater than or equal to `key`.
-            if cur_ptr != 0 && (cur_ptr != level.len() || level.len() % 2 == 0) && key <= level[cur_ptr - 1].key {
+            if cur_ptr != 0 && (cur_ptr != len || len % 2 == 0) && key <= level.entries[cur_ptr - 1].key {
                 cur_ptr -= 1;
             }
-            let (result, ptr) = Self::cascade_ptr(level, cur_ptr);
+            let (result, ptr) = Self::cascade_ptr(&level.entries, cur_ptr);
             next_ptr = ptr;
             out.push(result);
         }
@@ -142,7 +148,7 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
 }
 
 // Returns ix such that A[i] < key for all i < ix.
-fn bisect_left<T: Ord>(array: &[T], key: T) -> usize {
+pub fn bisect_left<T: Ord>(array: &[T], key: T) -> usize {
     let mut lo = 0;
     let mut hi = array.len();
     while lo < hi {
@@ -177,7 +183,7 @@ mod tests {
         }
         let f = FractionalCascade::new(array);
         for (i, ix) in f.bisect_left(key).into_iter().enumerate() {
-            for e in &f.levels[i][0..ix] {
+            for e in &f.levels[i].entries[0..ix] {
                 assert!(e.key < key);
             }
         }
