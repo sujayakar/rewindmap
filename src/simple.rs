@@ -6,7 +6,7 @@ enum EntryType {
         next_cascaded: Option<usize>,
     },
     Cascaded {
-        prev_original: Option<usize>,
+        prev_original: usize,
         next_level: usize,
     },
 }
@@ -46,7 +46,7 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
 
             for (ix, entry) in levels.last().unwrap().entries.iter().enumerate().step_by(2) {
                 let entry_type = EntryType::Cascaded {
-                    prev_original: None, // fix this up below
+                    prev_original: 0, // fix this up below
                     next_level: ix,
                 };
                 level.push(Entry { key: entry.key, entry_type });
@@ -54,11 +54,11 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
 
             level.sort();
 
-            let mut last_original = None;
+            let mut last_original = 0;
             for (ix, item) in level.iter_mut().enumerate() {
                 match item.entry_type {
                     EntryType::Original { .. } => {
-                        last_original = Some(ix);
+                        last_original = ix;
                     },
                     EntryType::Cascaded { ref mut prev_original, .. } => {
                         *prev_original = last_original;
@@ -92,13 +92,14 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
         self.levels.iter().map(|l| bisect_left(&l.entries, k)).collect()
     }
 
+    #[inline(never)]
     fn cascade_ptr(level: &[Entry<T>], ix: usize) -> (usize, Option<usize>) {
         if ix >= level.len() {
             return (ix, None);
         }
         match level[ix].entry_type {
             EntryType::Cascaded { prev_original, next_level } => {
-                (prev_original.unwrap_or(0), Some(next_level))
+                (prev_original, Some(next_level))
             },
             EntryType::Original { next_cascaded: Some(cascaded_ix) } => {
                 let next_level = match level[cascaded_ix].entry_type {
@@ -111,6 +112,7 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
         }
     }
 
+    #[inline(never)]
     pub fn bisect_left(&self, key: T) -> Vec<usize> {
         let mut out = Vec::with_capacity(self.levels.len());
         let mut levels_iter = self.levels.iter();
@@ -148,6 +150,7 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
 }
 
 // Returns ix such that A[i] < key for all i < ix.
+#[inline(never)]
 pub fn bisect_left<T: Ord>(array: &[T], key: T) -> usize {
     let mut lo = 0;
     let mut hi = array.len();
