@@ -17,8 +17,8 @@ fn criterion_benchmark(c: &mut Criterion) {
     let mut rng = StdRng::seed_from_u64(0);
 
     for n in 100..101 {
-        let n = 10000;
-        let m = 1000;
+        let n = 100000;
+        let m = 100;
 
         let key = rng.gen_range(0, m);
         let dist = Uniform::new(0, m);

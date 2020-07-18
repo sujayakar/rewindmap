@@ -95,7 +95,7 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
         if ix >= level.entries.len() {
             return (ix, level.next_len, level.check_preceding);
         }
-        let entry = &level.entries[ix];
+        let entry = unsafe { &*level.entries.get_unchecked(ix) };
         (entry.prev_original, entry.next_level, entry.check_preceding)
     }
 
@@ -113,7 +113,6 @@ impl<T: Copy + Clone + Debug + Ord> FractionalCascade<T> {
 
         for level in levels_iter {
             let mut cur_ptr = next_ptr;//.unwrap_or(level.entries.len());
-            let len = level.entries.len();
 
             // We know that the cascaded pointer has a value >= key in the previous level. We also
             // know that any previous element in the current array that was cascaded into the
